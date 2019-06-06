@@ -5,23 +5,25 @@ const fs = require('fs')
 const request = require('request-promise')
 const readlineSync = require('readline-sync')
 
-let { tokens, messages, stickers, mode, limit, post, interval } = fs.existsSync('./config.json') ? global.safeRequire('./config.json') : {}
+let { tokens, messages, stickers, mode, execute, limit, post, interval } = fs.existsSync('./config.json') ? global.safeRequire('./config.json') : {}
 
 let data = {
   sent: 0,
+  execute: 0,
   success: 0,
   errors: 0,
 }
 
 let errors = {
+  9: 'Слишком много комментариев за последние 15 минут.',
   15: 'Нет доступа к комментированию записи. [нет 50 подписчиков / группа создана менее недели назад]',
-  213: 'Нет возможности комментирования записи. [на странице пользователя закрыты комментарии]'
+  213: 'Нет возможности комментирования записи. [на странице пользователя закрыты комментарии]',
 }
 
 async function init () {
   console.log(`${chalk.blue('>')} Инициализация скрипта.`)
 
-  let [, owner_id, post_id ] = post.match(/(\d+)_(\d+)/)
+  let [ , owner_id, post_id ] = post.match(/(\d+)_(\d+)/)
 
   tokens.forEach((token, index) => {
     if (token === '' || token == null) {
@@ -56,37 +58,53 @@ async function init () {
       console.error(`${chalk.red('>')} Вы указали некорректный режим.`)
       readlineSync.keyIn(`${chalk.blue('>')} Press any key . . .`, { hideEchoBack: true, mask: '' })
       process.exit(0)
-      break
     }
   }
 
+  if (interval < 50) interval = 50
+
   setInterval(async () => {
     tokens.forEach(async (token) => {
-      data.sent++
-      let message = mode === 1 ? messages[data.sent % messages.length] : stickers[data.sent % stickers.length]
-      await request(`https://api.vk.com/method/wall.createComment?owner_id=${owner_id}&post_id=${post_id}&${mode === 1 ? 'message=' : 'sticker_id='}${encodeURI(message)}&v=5.95&access_token=${token}`)
-        .then((resp) => {
-          if (resp.includes('response')) {
-            data.success++
-            console.log(`${chalk.green('>')} Оставлен комментарий #${data.success} с${ mode === 1 ? ' текстом' : 'о стикером' } '${message}'.`)
-            if (data.success >= limit && limit !== 0) {
-              console.log(`${chalk.blue('>')} Завершена работа скрипта, достингут лимит.`)
-              readlineSync.keyIn(`${chalk.blue('>')} Press any key . . .`, { hideEchoBack: true, mask: '' })
-              process.exit(1)
+      if (execute) data.execute++
+      execute ? data.sent += 25 : data.sent++
+      let message = mode === 1 ? messages[(execute ? data.execute : data.sent) % messages.length] : stickers[(execute ? data.execute : data.sent) % stickers.length]
+      if (execute) {
+        await request(`https://api.vk.com/method/execute?code=${encodeURI(`API.wall.createComment({owner_id:${owner_id},post_id:${post_id},${mode === 1 ? 'message:' : 'sticker_id:'}${encodeURI(message)}});`.repeat(25))}&v=5.95&access_token=${token}`)
+          .then((resp) => {
+            if (resp.includes('response') && !resp.includes('execute_errors')) {
+              data.success += 25
+              console.log(`${chalk.green('>')} Оставлены комментарии #${data.success - 25} - ${data.success} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}'.`)
+              if (data.success >= limit && limit !== 0) {
+                console.log(`${chalk.blue('>')} Завершена работа скрипта, достингут лимит.`)
+                readlineSync.keyIn(`${chalk.blue('>')} Press any key . . .`, { hideEchoBack: true, mask: '' })
+                process.exit(1)
+              }
+            } else {
+              let { execute_errors } = JSON.parse(resp)
+              let error_message = errors[execute_errors[0].error_code] || execute_errors[0].error_msg
+              data.errors++
+              console.log(`${chalk.red('>')} Ошибка при оставлении комментариев #${data.sent - 25} - ${data.sent} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}': ${error_message}`)
             }
-          } else {
-            let { error } = JSON.parse(resp)
-            let error_message = errors[error.error_code] || error.error_msg
-            data.errors++
-            console.log(`${chalk.red('>')} Ошибка при оставлении комментария #${data.sent} с${ mode === 1 ? ' текстом' : 'о стикером' } '${message}': ${error_message}`)
-          }
-        })
-        .catch((error) => {
-          if (error) {
-            data.errors++
-            console.log(`${chalk.red('>')} Ошибка при оставлении комментария #${data.sent} с${ mode === 1 ? ' текстом' : 'о стикером' } '${message}'.`)
-          }
-        })
+          })
+      } else {
+        await request(`https://api.vk.com/method/wall.createComment?owner_id=${owner_id}&post_id=${post_id}&${mode === 1 ? 'message=' : 'sticker_id='}${encodeURI(message)}&v=5.95&access_token=${token}`)
+          .then((resp) => {
+            if (resp.includes('response')) {
+              data.success++
+              console.log(`${chalk.green('>')} Оставлен комментарий #${data.success} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}'.`)
+              if (data.success >= limit && limit !== 0) {
+                console.log(`${chalk.blue('>')} Завершена работа скрипта, достингут лимит.`)
+                readlineSync.keyIn(`${chalk.blue('>')} Press any key . . .`, { hideEchoBack: true, mask: '' })
+                process.exit(1)
+              }
+            } else {
+              let { error } = JSON.parse(resp)
+              let error_message = errors[error.error_code] || error.error_msg
+              data.errors++
+              console.log(`${chalk.red('>')} Ошибка при оставлении комментария #${data.sent} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}': ${error_message}`)
+            }
+          })
+      }
     })
   }, interval)
   console.log(`${chalk.blue('>')} Скрипт запущен.`)
