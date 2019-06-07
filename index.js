@@ -5,7 +5,7 @@ const fs = require('fs')
 const request = require('request-promise')
 const readlineSync = require('readline-sync')
 
-let { tokens, messages, stickers, mode, execute, limit, post, interval } = fs.existsSync('./config.json') ? global.safeRequire('./config.json') : {}
+let { tokens, messages, stickers, mode, execute, execute_count, limit, post, interval } = fs.existsSync('./config.json') ? global.safeRequire('./config.json') : {}
 
 let data = {
   sent: 0,
@@ -15,9 +15,13 @@ let data = {
 }
 
 let errors = {
-  9: 'Слишком много комментариев за последние 15 минут.',
+  9: 'Слишком много комментариев за последнее время.',
   15: 'Нет доступа к комментированию записи. [нет 50 подписчиков / группа создана менее недели назад]',
   213: 'Нет возможности комментирования записи. [на странице пользователя закрыты комментарии]',
+}
+
+let statusErrors = {
+  414: 'Слишком длинный запрос. (возможно, в нем используются русские буквы) [отключите execute или измените текст на английский или используйте режим отправки стикеров]',
 }
 
 async function init () {
@@ -63,28 +67,34 @@ async function init () {
 
   if (interval < 50) interval = 50
 
+  if (execute_count > 25 || execute_count <= 0) execute_count = 25
+
   setInterval(async () => {
     tokens.forEach(async (token) => {
       if (execute) data.execute++
-      execute ? data.sent += 25 : data.sent++
-      let message = mode === 1 ? messages[(execute ? data.execute : data.sent) % messages.length] : stickers[(execute ? data.execute : data.sent) % stickers.length]
+      execute ? data.sent += execute_count : data.sent++
+      let message = mode === 1 ? messages[(data.execute || data.sent) % messages.length] : stickers[(data.execute || data.sent) % stickers.length]
       if (execute) {
-        await request(`https://api.vk.com/method/execute?code=${encodeURI(`API.wall.createComment({owner_id:${owner_id},post_id:${post_id},${mode === 1 ? 'message:' : 'sticker_id:'}${encodeURI(message)}});`.repeat(25))}&v=5.95&access_token=${token}`)
+        await request(`https://api.vk.com/method/execute?code=${`API.wall.createComment({owner_id:${owner_id},post_id:${post_id},${mode === 1 ? 'message:' : 'sticker_id:'}${mode === 1 ? '"' : ''}${encodeURIComponent(message)}${mode === 1 ? '"' : ''}});`.repeat(execute_count)}&v=5.95&access_token=${token}`)
           .then((resp) => {
             if (resp.includes('response') && !resp.includes('execute_errors')) {
-              data.success += 25
-              console.log(`${chalk.green('>')} Оставлены комментарии #${data.success - 25} - ${data.success} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}'.`)
+              data.success += execute_count
+              console.log(`${chalk.green('>')} Оставлены комментарии #${data.success - execute_count} - ${data.success} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}'.`)
               if (data.success >= limit && limit !== 0) {
                 console.log(`${chalk.blue('>')} Завершена работа скрипта, достингут лимит.`)
                 readlineSync.keyIn(`${chalk.blue('>')} Press any key . . .`, { hideEchoBack: true, mask: '' })
                 process.exit(1)
               }
             } else {
-              let { execute_errors } = JSON.parse(resp)
-              let error_message = errors[execute_errors[0].error_code] || execute_errors[0].error_msg
+              let { execute_errors, error } = JSON.parse(resp)
+              let error_message = errors[(error || execute_errors[0]).error_code] || (error || execute_errors[0]).error_msg
               data.errors++
-              console.log(`${chalk.red('>')} Ошибка при оставлении комментариев #${data.sent - 25} - ${data.sent} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}': ${error_message}`)
+              console.log(`${chalk.red('>')} Ошибка при оставлении комментариев #${data.sent - execute_count} - ${data.sent} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}': ${error_message}`)
             }
+          })
+          .catch((error) => {
+            let error_message = statusErrors[error.statusCode] || error
+            console.error(`${chalk.red('>')} Ошибка при оставлении комментариев #${data.sent - execute_count} - ${data.sent} с${mode === 1 ? ' текстом' : 'о стикером'} '${message}': ${error_message}`)
           })
       } else {
         await request(`https://api.vk.com/method/wall.createComment?owner_id=${owner_id}&post_id=${post_id}&${mode === 1 ? 'message=' : 'sticker_id='}${encodeURI(message)}&v=5.95&access_token=${token}`)
